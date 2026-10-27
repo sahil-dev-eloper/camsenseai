@@ -48,10 +48,19 @@ class YoloModel:
                     cls._instance = YoloModel()
         return cls._instance
 
-    def predict(self, frame, conf: float):
+    def predict(self, frame, conf: float, imgsz: int = 480):
         """Run inference on a BGR frame. Returns the ultralytics Results, or None."""
         if not self.available or self.model is None:
             return None
-        # verbose=False keeps the console clean; single-image call reuses the
-        # already-loaded weights.
-        return self.model.predict(frame, conf=conf, verbose=False)[0]
+
+        # Cache result if called multiple times on the same frame in the same tick
+        frame_id = id(frame)
+        if getattr(self, "_last_frame_id", None) == frame_id and getattr(self, "_last_result", None) is not None:
+            return self._last_result
+
+        # Run inference once with lowest threshold needed across detectors
+        run_conf = min(float(conf), 0.20)
+        res = self.model.predict(frame, conf=run_conf, imgsz=imgsz, verbose=False)[0]
+        self._last_frame_id = frame_id
+        self._last_result = res
+        return res

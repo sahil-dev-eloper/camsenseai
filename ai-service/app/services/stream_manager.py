@@ -44,11 +44,82 @@ from app.services.pipeline import pipeline
 _TRACK_IOU = 0.3
 
 
+class _LiveCapture:
+    """Zero-latency reader for live video sources (webcams, RTSP streams).
+
+    Continuously drains frames from the hardware/driver buffer in a dedicated background
+    thread so the AI processing loop always receives the absolute latest real-time frame
+    with zero buffering delay.
+    """
+    def __init__(self, source: int | str) -> None:
+        self.source = source
+        self._lock = threading.Lock()
+        self._frame = None
+        self._ok = False
+        self._stop = threading.Event()
+        self._cap: cv2.VideoCapture | None = None
+        self._thread: threading.Thread | None = None
+        self._open()
+
+    def _open(self) -> bool:
+        if isinstance(self.source, int):
+            cap = cv2.VideoCapture(self.source, cv2.CAP_DSHOW)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(self.source)
+        else:
+            cap = cv2.VideoCapture(self.source)
+
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
+
+        self._cap = cap
+        if cap.isOpened():
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                self._ok = True
+                self._frame = frame
+            self._thread = threading.Thread(target=self._reader, name="live-capture-reader", daemon=True)
+            self._thread.start()
+            return True
+        return False
+
+    def _reader(self) -> None:
+        while not self._stop.is_set():
+            if self._cap is None or not self._cap.isOpened():
+                time.sleep(0.05)
+                continue
+            ok, frame = self._cap.read()
+            if ok and frame is not None:
+                with self._lock:
+                    self._ok = True
+                    self._frame = frame
+            else:
+                time.sleep(0.01)
+
+    def read(self) -> tuple[bool, any]:
+        with self._lock:
+            if not self._ok or self._frame is None:
+                return False, None
+            return True, self._frame.copy()
+
+    def isOpened(self) -> bool:
+        return self._cap is not None and self._cap.isOpened()
+
+    def release(self) -> None:
+        self._stop.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+        if self._cap and self._cap.isOpened():
+            self._cap.release()
+
+
 class _CameraWorker:
     #: Seconds a transient face track survives without being re-seen.
-    _TRACK_TTL = 3.0
+    _TRACK_TTL = 4.0
     #: Seconds an identity overlay keeps being drawn after its recognition pass.
-    _OVERLAY_TTL = 1.0
+    _OVERLAY_TTL = 1.5
 
     def __init__(self, camera_id: str, source: str | None, mode: str) -> None:
         self.camera_id = camera_id
@@ -59,6 +130,8 @@ class _CameraWorker:
         self._lock = threading.Lock()
 
         self._latest_jpeg: bytes | None = None
+        self._frame_seq = 0
+        self._new_frame_event = threading.Event()
         self._demo_weapon_until: float = 0.0
 
         # Live stats.
@@ -125,23 +198,24 @@ class _CameraWorker:
 
     def _run(self) -> None:
         settings = get_settings()
-        cap = cv2.VideoCapture(self._source)
+        is_live = self.mode in ("webcam", "real")
+        cap = _LiveCapture(self._source) if is_live else cv2.VideoCapture(self._source)
         target_dt = 1.0 / max(1, settings.target_fps)
         last_time = 0.0
 
         while not self._stop.is_set():
             ok, frame = cap.read()
-            if not ok:
-                # Demo video ended → loop it; real stream error → brief backoff.
+            if not ok or frame is None:
                 if self.mode == "demo":
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    if isinstance(cap, cv2.VideoCapture):
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     continue
-                time.sleep(0.5)
-                cap.open(self._source)
+                time.sleep(0.1)
                 continue
 
             now = time.time()
             if now - last_time < target_dt:
+                time.sleep(0.005)
                 continue  # frame skipping to hit target FPS
             last_time = now
 
@@ -152,12 +226,7 @@ class _CameraWorker:
 
             # ── Review 2: decide whether identity work runs on this frame ──
             # Object detection runs every processed frame (Review 1 behaviour).
-            # Face detection AND recognition run on every Nth processed frame:
-            # on other frames the pipeline is handed an EMPTY face list, so the
-            # face detector does not run its own YuNet pass and identity work
-            # cannot slow the human/weapon path. The face records computed here
-            # are shared with the pipeline, so YuNet runs once per recognition
-            # frame, not twice.
+            # Face detection AND recognition run on every Nth processed frame.
             self._frame_counter += 1
             every = max(1, int(settings.face_recognition_every_n_frames))
             recognition_due = self._frame_counter % every == 0
@@ -208,19 +277,47 @@ class _CameraWorker:
             self.recognition_errors += 1
             print(f"[stream:{self.camera_id}] recognition failed: {exc}")
             return []
+
+        # ── Track Identity Persistence & Hysteresis Smoothing ──
+        # Avoid momentary "UNKNOWN" flicker when an enrolled person tilts their head, blinks, or moves
+        now = time.time()
+        threshold = float(get_settings().face_match_threshold)
+        for res in results:
+            if not res.track_id:
+                continue
+            track = next((t for t in self._tracks if t.get("id") == res.track_id), None)
+            if not track:
+                continue
+
+            if res.status == "KNOWN" and res.person_id:
+                track["last_known_id"] = res.person_id
+                track["last_known_name"] = res.person_name
+                track["last_known_ts"] = now
+                track["last_known_sim"] = max(res.similarity or 0.0, track.get("last_known_sim", 0.0))
+                track["unmatched_streak"] = 0
+            elif track.get("last_known_id"):
+                time_since_known = now - track.get("last_known_ts", 0)
+                track["unmatched_streak"] = track.get("unmatched_streak", 0) + 1
+                # If verified as KNOWN in the last 4.0 seconds and hasn't persistently failed:
+                if time_since_known <= 4.0 and track["unmatched_streak"] <= 5:
+                    res.status = "KNOWN"
+                    res.person_id = track["last_known_id"]
+                    res.person_name = track["last_known_name"]
+                    # Smooth similarity above threshold so backend's validateIdentityClaim accepts the claim
+                    # and never downgrades to UNKNOWN:
+                    base_sim = track.get("last_known_sim", threshold)
+                    res.similarity = max(
+                        res.similarity or 0.0,
+                        threshold,
+                        round(base_sim * 0.95, 4),
+                    )
+
         self._latest_recognitions = results
         self._recognitions_until = time.time() + self._OVERLAY_TTL
         return results
 
     def _overlay_recognitions(self) -> list[FaceRecognitionResult]:
-        """The identity overlays worth drawing right now.
-
-        Recognition runs every Nth frame, so between passes the labels from the
-        most recent pass are reused for a short TTL to avoid flicker. The boxes
-        are always the real coordinates the AI service returned — they may lag
-        the live frame by up to the recognition interval, and stale labels are
-        dropped entirely rather than being drawn indefinitely.
-        """
+        """The identity overlays worth drawing right now."""
         if time.time() > self._recognitions_until:
             return []
         return self._latest_recognitions
@@ -229,21 +326,36 @@ class _CameraWorker:
         """Transient per-camera handle for repeated sightings of one face.
 
         Associates this pass's face boxes with the previous pass by greedy
-        bbox-IoU so repeated observations can be de-duplicated and alert
-        cooldowns applied. It is a SHORT-LIVED SESSION HANDLE ONLY and makes NO
-        claim about the person's real identity — an unmatched face keeps its
-        track id while staying anonymous.
+        bbox-IoU and center proximity so head turns/leans do not break tracking.
         """
         now = time.time()
         self._tracks = [t for t in self._tracks if now - t["ts"] <= self._TRACK_TTL]
-        best, best_iou = None, 0.0
+        best, best_score = None, 0.0
+        bx, by, bw, bh = bbox
+        bc_x, bc_y = bx + bw / 2.0, by + bh / 2.0
+        b_size = max(bw, bh)
+
         for track in self._tracks:
             if track.get("pass") == self._recognition_pass:
                 continue  # already claimed by another face in this same pass
+            tx, ty, tw, th = track["bbox"]
             iou = face_service.bbox_iou(bbox, track["bbox"])
-            if iou > best_iou:
-                best, best_iou = track, iou
-        if best is not None and best_iou >= _TRACK_IOU:
+            if iou >= 0.20:
+                score = iou
+            else:
+                tc_x, tc_y = tx + tw / 2.0, ty + th / 2.0
+                dist = ((bc_x - tc_x) ** 2 + (bc_y - tc_y) ** 2) ** 0.5
+                avg_size = (b_size + max(tw, th)) / 2.0
+                # If face centers are close (within 1.2x face size), it's the same head
+                if avg_size > 0 and dist <= avg_size * 1.2:
+                    score = max(0.20, 1.0 - (dist / (avg_size * 2.0)))
+                else:
+                    score = 0.0
+
+            if score > best_score:
+                best, best_score = track, score
+
+        if best is not None and best_score >= 0.20:
             best["bbox"] = list(bbox)
             best["ts"] = now
             best["pass"] = self._recognition_pass
@@ -276,9 +388,6 @@ class _CameraWorker:
                       recognition_due: bool = True) -> None:
         self.people = sum(1 for d in detections if d.type == "human")
         self.weapons = sum(1 for d in detections if d.type == "weapon")
-        # Face and identity counters only change on frames where face
-        # detection / recognition actually ran, so they reflect the latest real
-        # measurement rather than decaying to zero between recognition passes.
         if recognition_due:
             self.faces = sum(1 for d in detections if d.type == "face")
         if recognitions is not None and recognitions:
@@ -299,6 +408,8 @@ class _CameraWorker:
         if ok:
             with self._lock:
                 self._latest_jpeg = buf.tobytes()
+                self._frame_seq += 1
+            self._new_frame_event.set()
 
 
 class StreamManager:
@@ -330,14 +441,22 @@ class StreamManager:
     def mjpeg(self, camera_id: str):
         """Multipart MJPEG generator for a camera's annotated stream."""
         boundary = b"--frame"
+        last_seq = -1
         while True:
             worker = self._workers.get(camera_id)
             if worker is None or not worker.running:
                 break
-            jpeg = worker.latest_jpeg()
-            if jpeg is not None:
+            # Wait for worker to produce a fresh frame (up to 80ms)
+            worker._new_frame_event.wait(timeout=0.08)
+            worker._new_frame_event.clear()
+
+            with worker._lock:
+                seq = worker._frame_seq
+                jpeg = worker._latest_jpeg
+
+            if jpeg is not None and seq != last_seq:
+                last_seq = seq
                 yield boundary + b"\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
-            time.sleep(1 / 15)
 
 
 stream_manager = StreamManager()

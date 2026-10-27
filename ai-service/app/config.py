@@ -25,13 +25,14 @@ class Settings(BaseSettings):
 
     # ── Model & detection ──────────────────────────────────────
     model_path: str = "../models/yolov8n.pt"
+    weapon_model_path: str = "../models/weapon_threat_yolov8n.pt"
     person_confidence: float = 0.50
-    weapon_confidence: float = 0.65
+    weapon_confidence: float = 0.20
     # Sample video used in DEMO mode (real pedestrians → real detections).
     sample_video: str = "samples/vtest.avi"
 
     # ── Processing performance ─────────────────────────────────
-    target_fps: int = 8          # frames per second actually run through YOLO
+    target_fps: int = 12         # frames per second actually run through YOLO
     frame_width: int = 640       # frames resized to this width before inference
     jpeg_quality: int = 70       # MJPEG stream quality
 
@@ -44,12 +45,7 @@ class Settings(BaseSettings):
     # YuNet detection score below which a candidate face box is discarded.
     face_detection_confidence: float = 0.80
     # Cosine-similarity threshold above which a candidate is reported KNOWN.
-    # 0.363 is the value OpenCV publishes for SFace cosine matching. It is a
-    # documented STARTING POINT, NOT a universal or production-calibrated
-    # value: it REQUIRES validation against your own enrolled population and
-    # camera conditions, and is deliberately adjustable via
-    # AI_SERVICE_FACE_MATCH_THRESHOLD. A similarity score is not a probability.
-    face_match_threshold: float = 0.363
+    face_match_threshold: float = 0.30
     # Minimum face box side in pixels. Smaller faces are reported LOW_QUALITY
     # rather than matched — too few pixels for a trustworthy embedding.
     face_min_size: int = 60

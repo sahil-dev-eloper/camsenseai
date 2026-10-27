@@ -104,7 +104,7 @@ export async function markAttendance({
   // disables ONLY attendance: detection, alerts, cameras and people management
   // all keep working.
   const indexState = getAttendanceIndexState();
-  if (!attendanceDuplicatePreventionReady(indexState)) {
+  if (!attendanceDuplicatePreventionReady(getAttendanceIndexState())) {
     return {
       created: false,
       record: null,

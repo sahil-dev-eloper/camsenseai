@@ -362,11 +362,12 @@ class EmbeddingCache:
             thread.start()
             return self.loaded
 
-        return self._refresh_now(
+        self._refresh_now(
             expected_dim=expected_dim,
             expected_model=expected_model,
             generation=generation,
         )
+        return self.loaded
 
     def refresh_blocking(self, expected_dim: int | None = None,
                          expected_model: str | None = None) -> dict:
@@ -380,11 +381,14 @@ class EmbeddingCache:
         not happened.
         """
         self.invalidate()
-        installed = self.ensure_fresh(
+        with self._lock:
+            self._generation += 1
+            self._refresh_in_flight += 1
+            generation = self._generation
+        installed = self._refresh_now(
             expected_dim=expected_dim,
             expected_model=expected_model,
-            force=True,
-            blocking=True,
+            generation=generation,
         )
         result = self.state()
         result["refreshed"] = bool(installed)

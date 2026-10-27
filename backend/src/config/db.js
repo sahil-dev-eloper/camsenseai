@@ -60,7 +60,7 @@ export function setAttendanceIndexStateForTests(state) {
  *
  * TWO DELIBERATE CHOICES, both from review findings:
  *
- * 1. `createIndexes()`, NOT `syncIndexes()`. syncIndexes also DROPS any index
+ * 1. `createIndexes()`, NOT `syncIndexes`. syncIndexes also DROPS any index
  *    that is not declared in the schema, which would silently remove an index
  *    an operator added out of band (a reporting compound index, a TTL index for
  *    image/record retention). createIndexes builds what the schema declares and

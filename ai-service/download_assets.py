@@ -130,8 +130,24 @@ def fetch_face_models() -> None:
             )
 
 
+def fetch_weapon_threat_model() -> None:
+    target = os.path.join(MODELS_DIR, "weapon_threat_yolov8n.pt")
+    if os.path.exists(target) and os.path.getsize(target) >= 5_000_000:
+        print(f"[OK] weapon threat model already present: {target}")
+        return
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    url = "https://huggingface.co/Subh775/Threat-Detection-YOLOv8n/resolve/main/weights/best.pt"
+    print("Downloading dedicated weapon & threat detection model ...")
+    try:
+        _download_url_to_file(url, target)
+        print(f"[OK] weapon threat model ready: {target}")
+    except Exception as exc:
+        print(f"  -> failed to download weapon threat model: {exc}")
+
+
 if __name__ == "__main__":
     fetch_weights()
+    fetch_weapon_threat_model()
     fetch_video()
     fetch_face_models()
     print("\nAll AI assets ready. You can now start the service:")

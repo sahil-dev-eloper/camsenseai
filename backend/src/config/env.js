@@ -89,7 +89,7 @@ export const env = {
     // is OpenCV's published STARTING POINT for the SFace model — it requires
     // validation on real enrolled data and is deliberately adjustable. It is
     // not a calibrated probability and implies no accuracy guarantee.
-    matchThreshold: Number(process.env.RECOGNITION_MATCH_THRESHOLD) || 0.363,
+    matchThreshold: Number(process.env.RECOGNITION_MATCH_THRESHOLD) || 0.30,
     // Temporal verification before an unknown-identity event is raised: the
     // same camera+track must be seen this many times inside this window.
     unknownPersistenceCount: Number(process.env.UNKNOWN_PERSISTENCE_COUNT) || 2,

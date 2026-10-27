@@ -18,8 +18,8 @@ class HumanDetector(Detector):
         if not model.available:
             return []
 
-        conf = get_settings().person_confidence
-        result = model.predict(frame, conf=conf)
+        conf = float(get_settings().person_confidence)
+        result = model.predict(frame, conf=conf, imgsz=480)
         if result is None or result.boxes is None:
             return []
 
@@ -29,12 +29,15 @@ class HumanDetector(Detector):
             name = model.names.get(cls_id, str(cls_id))
             if name != "person":
                 continue
+            box_conf = float(box.conf[0])
+            if box_conf < conf:
+                continue
             x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
             detections.append(
                 Detection(
                     type=self.type,
                     label="person",
-                    confidence=round(float(box.conf[0]), 2),
+                    confidence=round(box_conf, 2),
                     bbox=[x1, y1, x2 - x1, y2 - y1],
                     source="real",
                 )
