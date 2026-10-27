@@ -103,7 +103,7 @@ export function PersonFormModal({
     if (key === 'personId' || key === 'name' || key === 'email') {
       setErrors((e) => {
         const next = { ...e };
-        delete next[key];
+        delete (next as Record<string, string | undefined>)[key];
         return next;
       });
     }

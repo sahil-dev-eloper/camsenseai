@@ -12,7 +12,7 @@ const cameraSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     location: { type: String, trim: true },
     streamUrl: { type: String, trim: true },
-    mode: { type: String, enum: ['demo', 'real'], default: 'demo' },
+    mode: { type: String, enum: ['demo', 'real', 'webcam'], default: 'demo' },
     status: {
       type: String,
       enum: ['online', 'offline', 'error'],

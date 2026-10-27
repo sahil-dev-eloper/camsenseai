@@ -60,7 +60,7 @@ export async function ingestDetections(payload) {
         class: best.label,
         confidence: best.confidence,
         boundingBox: best.bbox,
-        source: best.source || mode,
+        source: (best.source === 'demo' || mode === 'demo') ? 'demo' : 'real',
         timestamp: new Date(),
       });
       stored += 1;

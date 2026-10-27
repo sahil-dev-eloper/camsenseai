@@ -11,7 +11,7 @@ export const cameraSchema = z.object({
   name: z.string().min(1, 'Name is required').max(80),
   location: z.string().max(120).optional().default(''),
   streamUrl: z.string().max(300).optional().default(''),
-  mode: z.enum(['demo', 'real']).default('demo'),
+  mode: z.enum(['demo', 'real', 'webcam']).default('demo'),
   aiEnabled: z.boolean().default(true),
 });
 
@@ -77,7 +77,7 @@ export const setMonitoring = asyncHandler(async (req, res) => {
     if (!camera.aiEnabled) throw ApiError.badRequest('AI monitoring is disabled for this camera');
     await aiClient.startStream({
       cameraId: camera.cameraId,
-      source: camera.mode === 'real' ? camera.streamUrl : null,
+      source: camera.mode === 'webcam' ? (camera.streamUrl || '0') : (camera.mode === 'real' ? camera.streamUrl : null),
       mode: camera.mode,
     });
     camera.status = 'online';

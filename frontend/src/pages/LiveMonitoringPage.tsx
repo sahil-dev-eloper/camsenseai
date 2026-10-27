@@ -324,6 +324,7 @@ export function LiveMonitoringPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   {selected?.mode === 'demo' && <Badge tone="info">DEMO MODE</Badge>}
+                  {selected?.mode === 'webcam' && <Badge tone="safe">WEBCAM</Badge>}
                   {running ? (
                     <Button variant="danger" size="sm" leftIcon={<Square className="h-4 w-4" />} onClick={handleStop}>
                       Stop

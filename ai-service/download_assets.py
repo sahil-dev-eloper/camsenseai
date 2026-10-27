@@ -11,12 +11,6 @@ It fetches:
   - samples/vtest.avi                                  (OpenCV pedestrian demo video, ~8 MB)
   - ../models/face_detection_yunet_2023mar.onnx        (YuNet face detector, ~230 KB)
   - ../models/face_recognition_sface_2021dec.onnx      (SFace face embedder, ~37 MB)
-
-The two face models are ONNX files run through the already-installed
-opencv-python-headless, so Review 2 face recognition needs no new pip package —
-only these weights. Every fetch is idempotent (existing files are skipped) and
-fails SOFTLY: a download problem prints the exact target path so the file can be
-placed manually, and never raises.
 """
 import os
 import shutil
@@ -26,12 +20,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.normpath(os.path.join(HERE, "..", "models"))
 SAMPLES_DIR = os.path.join(HERE, "samples")
 
-VIDEO_URL = "https://github.com/opencv/opencv/raw/master/samples/data/vtest.avi"
+VIDEO_URLS = [
+    "https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/vtest.avi",
+    "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/vtest.avi",
+]
 
-# OpenCV Zoo keeps these weights in git-lfs, so the media.githubusercontent.com
-# host (which resolves LFS pointers) is tried first and the plain raw host is
-# only a fallback. A suspiciously small file is treated as a failure, because an
-# unresolved LFS pointer downloads as a ~130-byte text file.
 _ZOO_MEDIA = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models"
 _ZOO_RAW = "https://raw.githubusercontent.com/opencv/opencv_zoo/main/models"
 
@@ -51,77 +44,86 @@ FACE_MODELS = [
 ]
 
 
+def _download_url_to_file(url: str, target: str) -> None:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req) as resp, open(target, "wb") as f:
+        shutil.copyfileobj(resp, f)
+
+
 def fetch_weights() -> None:
     target = os.path.join(MODELS_DIR, "yolov8n.pt")
     if os.path.exists(target):
-        print(f"✓ weights already present: {target}")
+        print(f"[OK] weights already present: {target}")
         return
     os.makedirs(MODELS_DIR, exist_ok=True)
-    print("Downloading YOLOv8n weights via ultralytics …")
+    print("Downloading YOLOv8n weights via ultralytics ...")
     from ultralytics import YOLO
 
     YOLO("yolov8n.pt")  # downloads into CWD
     downloaded = os.path.join(os.getcwd(), "yolov8n.pt")
     if os.path.exists(downloaded):
         shutil.move(downloaded, target)
-    print(f"✓ weights ready: {target}")
+    print(f"[OK] weights ready: {target}")
 
 
 def fetch_video() -> None:
     target = os.path.join(SAMPLES_DIR, "vtest.avi")
     if os.path.exists(target):
-        print(f"✓ sample video already present: {target}")
+        print(f"[OK] sample video already present: {target}")
         return
     os.makedirs(SAMPLES_DIR, exist_ok=True)
-    print("Downloading sample pedestrian video …")
-    urllib.request.urlretrieve(VIDEO_URL, target)
-    print(f"✓ sample video ready: {target}")
+    print("Downloading sample pedestrian video ...")
+    for url in VIDEO_URLS:
+        try:
+            _download_url_to_file(url, target)
+            print(f"[OK] sample video ready: {target}")
+            return
+        except Exception as exc:
+            if os.path.exists(target):
+                try:
+                    os.remove(target)
+                except OSError:
+                    pass
+            print(f"  -> {url} failed: {exc}")
+    print("[X] sample video could not be downloaded (skipping).")
 
 
 def fetch_face_models() -> None:
-    """Download the YuNet + SFace ONNX weights used by Review 2 recognition.
-
-    Never raises: on failure it prints the exact target path and the source URL
-    so the file can be dropped in manually. The AI service starts fine without
-    these — face recognition simply reports itself unavailable while object
-    detection keeps working.
-    """
     os.makedirs(MODELS_DIR, exist_ok=True)
     for model in FACE_MODELS:
         target = os.path.join(MODELS_DIR, model["file"])
         if os.path.exists(target) and os.path.getsize(target) >= model["min_bytes"]:
-            print(f"✓ {model['label']} already present: {target}")
+            print(f"[OK] {model['label']} already present: {target}")
             continue
 
         urls = [
             f"{_ZOO_MEDIA}/{model['dir']}/{model['file']}",
             f"{_ZOO_RAW}/{model['dir']}/{model['file']}",
         ]
-        print(f"Downloading {model['label']} …")
+        print(f"Downloading {model['label']} ...")
         ok = False
         for url in urls:
             try:
-                urllib.request.urlretrieve(url, target)
+                _download_url_to_file(url, target)
                 size = os.path.getsize(target)
                 if size < model["min_bytes"]:
-                    # Almost certainly an unresolved git-lfs pointer file.
                     os.remove(target)
-                    print(f"  ↳ {url} returned only {size} bytes (not the real model) — trying next source")
+                    print(f"  -> {url} returned only {size} bytes (not the real model) - trying next source")
                     continue
-                print(f"✓ {model['label']} ready: {target}")
+                print(f"[OK] {model['label']} ready: {target}")
                 ok = True
                 break
-            except Exception as exc:  # noqa: BLE001 - fail softly, stay actionable
+            except Exception as exc:
                 if os.path.exists(target):
                     try:
                         os.remove(target)
                     except OSError:
                         pass
-                print(f"  ↳ {url} failed: {exc}")
+                print(f"  -> {url} failed: {exc}")
 
         if not ok:
             print(
-                f"✗ could not download {model['label']}.\n"
+                f"[X] could not download {model['label']}.\n"
                 f"  Face recognition will report UNAVAILABLE until this file exists.\n"
                 f"  Place it manually at: {target}\n"
                 f"  Source: {urls[0]}"

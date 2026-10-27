@@ -143,6 +143,7 @@ export function CamerasPage() {
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-xs text-content-faint">{camera.cameraId}</span>
                       {camera.mode === 'demo' && <Badge tone="info">DEMO</Badge>}
+                      {camera.mode === 'webcam' && <Badge tone="safe">WEBCAM</Badge>}
                     </div>
                     <h3 className="mt-1 text-sm font-semibold text-content">{camera.name}</h3>
                   </div>

@@ -109,9 +109,19 @@ export function CameraFormModal({
           onChange={(e) => set('mode', e.target.value as CameraInput['mode'])}
           options={[
             { value: 'demo', label: 'Demo — bundled sample video' },
+            { value: 'webcam', label: 'Webcam — Laptop / USB Camera' },
             { value: 'real', label: 'Real — RTSP / IP camera' },
           ]}
         />
+
+        {form.mode === 'webcam' && (
+          <div className="rounded-lg border border-border bg-raised/40 p-3 text-xs text-content-muted">
+            <p className="font-medium text-content">💻 Laptop / Built-in Camera</p>
+            <p className="mt-1">
+              Connects directly to your device's webcam (index 0). No RTSP stream URL or IP configuration needed!
+            </p>
+          </div>
+        )}
 
         {form.mode === 'real' && (
           <Input

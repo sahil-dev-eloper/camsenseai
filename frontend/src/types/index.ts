@@ -49,7 +49,7 @@ export interface BackendHealth {
 
 // ── Review 1 ─────────────────────────────────────────────────
 
-export type CameraMode = 'demo' | 'real';
+export type CameraMode = 'demo' | 'real' | 'webcam';
 export type CameraStatus = 'online' | 'offline' | 'connecting' | 'error';
 
 export interface Camera {

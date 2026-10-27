@@ -83,7 +83,14 @@ class _CameraWorker:
     @staticmethod
     def _resolve_source(source: str | None, mode: str):
         settings = get_settings()
+        if mode == "webcam":
+            try:
+                return int(source) if source is not None and str(source).strip().isdigit() else 0
+            except (ValueError, TypeError):
+                return 0
         if mode == "real" and source:
+            if isinstance(source, str) and source.strip().isdigit():
+                return int(source.strip())
             return source
         # Demo mode → bundled sample video (resolved relative to ai-service root).
         path = settings.sample_video
