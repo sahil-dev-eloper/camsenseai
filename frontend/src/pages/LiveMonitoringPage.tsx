@@ -9,6 +9,9 @@ import {
   Cctv,
   ScanFace,
   UserCheck,
+  Volume2,
+  VolumeX,
+  Bell,
 } from 'lucide-react';
 import {
   PageHeader,
@@ -28,8 +31,15 @@ import { recognitionService } from '@/services/recognitionService';
 import { useSocketEvent } from '@/hooks/useSocketEvent';
 import { SocketEvents } from '@/services/socket';
 import { formatTime } from '@/utils/format';
+import {
+  isBuzzerMuted,
+  playWeaponBuzzer,
+  toggleBuzzerMuted,
+  triggerWeaponAlarm,
+} from '@/utils/audioAlert';
 import type {
   AiStatus,
+  Alert,
   Camera,
   DetectionEventPayload,
   DetectorStatus,
@@ -104,9 +114,40 @@ export function LiveMonitoringPage() {
   const [recent, setRecent] = useState<DetectionEventPayload[]>([]);
   const [identities, setIdentities] = useState<IdentityFeedItem[]>([]);
 
+  const [buzzerMuted, setBuzzerMutedState] = useState(isBuzzerMuted());
+  const [weaponAlertActive, setWeaponAlertActive] = useState(false);
+  const weaponAlertTimeout = useRef<number | null>(null);
+
   const statsTimer = useRef<number | null>(null);
 
   const selected = cameras.find((c) => c._id === selectedId) || null;
+
+  const notifyWeaponDetected = useCallback(() => {
+    setWeaponAlertActive(true);
+    triggerWeaponAlarm();
+    if (weaponAlertTimeout.current) {
+      window.clearTimeout(weaponAlertTimeout.current);
+    }
+    weaponAlertTimeout.current = window.setTimeout(() => {
+      setWeaponAlertActive(false);
+    }, 3000);
+  }, []);
+
+  const handleToggleBuzzer = useCallback(() => {
+    const next = toggleBuzzerMuted();
+    setBuzzerMutedState(next);
+  }, []);
+
+  const handleTestBuzzer = useCallback(() => {
+    setWeaponAlertActive(true);
+    playWeaponBuzzer(true);
+    if (weaponAlertTimeout.current) {
+      window.clearTimeout(weaponAlertTimeout.current);
+    }
+    weaponAlertTimeout.current = window.setTimeout(() => {
+      setWeaponAlertActive(false);
+    }, 2500);
+  }, []);
 
   // Load cameras + AI status once.
   useEffect(() => {
@@ -138,7 +179,11 @@ export function LiveMonitoringPage() {
     if (!running || !selected) return;
     const poll = async () => {
       try {
-        setStats(await cameraService.stats(selected._id));
+        const s = await cameraService.stats(selected._id);
+        setStats(s);
+        if (s && s.weapons > 0) {
+          notifyWeaponDetected();
+        }
       } catch {
         /* transient — keep last stats */
       }
@@ -146,12 +191,23 @@ export function LiveMonitoringPage() {
     poll();
     statsTimer.current = window.setInterval(poll, 1500);
     return stopStatsPolling;
-  }, [running, selected, stopStatsPolling]);
+  }, [running, selected, stopStatsPolling, notifyWeaponDetected]);
 
   // Live detection feed for the selected camera.
   useSocketEvent<DetectionEventPayload>(SocketEvents.DETECTION_NEW, (payload) => {
     if (!selected || payload.cameraId !== selected.cameraId) return;
     setRecent((prev) => [payload, ...prev].slice(0, 8));
+    if (payload.type === 'weapon') {
+      notifyWeaponDetected();
+    }
+  });
+
+  // Weapon alert listener for the active camera
+  useSocketEvent<Alert>(SocketEvents.ALERT_NEW, (alert) => {
+    if (!selected || alert.cameraId !== selected.cameraId) return;
+    if (alert.type === 'weapon' || alert.severity === 'critical') {
+      notifyWeaponDetected();
+    }
   });
 
   // ── Review 2 · identity results ────────────────────────────
@@ -275,6 +331,7 @@ export function LiveMonitoringPage() {
 
   async function handleDemoWeapon() {
     if (!selected) return;
+    notifyWeaponDetected();
     await cameraService.triggerDemoWeapon(selected._id).catch(() => {});
   }
 
@@ -343,7 +400,13 @@ export function LiveMonitoringPage() {
               </div>
 
               {/* Video canvas */}
-              <div className="relative aspect-video overflow-hidden rounded-lg border border-border bg-black">
+              <div
+                className={`relative aspect-video overflow-hidden rounded-lg border bg-black transition-all duration-300 ${
+                  weaponAlertActive
+                    ? 'border-critical ring-4 ring-critical/70 shadow-[0_0_35px_rgba(239,68,68,0.5)]'
+                    : 'border-border'
+                }`}
+              >
                 {running && streamSrc && !streamError ? (
                   <>
                     <img
@@ -361,7 +424,19 @@ export function LiveMonitoringPage() {
                       <span className="rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-info">
                         AI ACTIVE
                       </span>
+                      {!buzzerMuted && (
+                        <span className="flex items-center gap-1 rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-safe">
+                          <Volume2 className="h-3 w-3" /> BUZZER ARMED
+                        </span>
+                      )}
                     </div>
+
+                    {weaponAlertActive && (
+                      <div className="absolute right-3 top-3 z-10 flex items-center gap-2 rounded-lg bg-critical px-3 py-1.5 text-xs font-bold text-white shadow-xl animate-pulse border border-red-300">
+                        <ShieldAlert className="h-4 w-4 animate-bounce text-white" />
+                        <span>CRITICAL: WEAPON DETECTED!</span>
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="flex h-full w-full flex-col items-center justify-center gap-3 text-content-muted">
@@ -378,21 +453,50 @@ export function LiveMonitoringPage() {
               </div>
 
               {running && (
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
                   <p className="text-xs text-content-faint">
                     Detection boxes and identity labels are drawn by the AI service from real model
-                    coordinates. A name is drawn only for a face that cleared the recognition
-                    threshold.
+                    coordinates.
                   </p>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    leftIcon={<ShieldAlert className="h-4 w-4" />}
-                    onClick={handleDemoWeapon}
-                    title="Injects a clearly-labelled DEMO weapon detection to demonstrate the alert pipeline"
-                  >
-                    Trigger demo weapon (DEMO)
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant={buzzerMuted ? 'secondary' : 'danger'}
+                      size="sm"
+                      leftIcon={
+                        buzzerMuted ? (
+                          <VolumeX className="h-4 w-4" />
+                        ) : (
+                          <Volume2 className="h-4 w-4 animate-pulse" />
+                        )
+                      }
+                      onClick={handleToggleBuzzer}
+                      title={
+                        buzzerMuted
+                          ? 'Alarm buzzer is MUTED. Click to activate sound.'
+                          : 'Alarm buzzer is ACTIVE. Click to mute sound.'
+                      }
+                    >
+                      {buzzerMuted ? 'Buzzer Muted' : 'Buzzer Armed'}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      leftIcon={<Bell className="h-4 w-4 text-warning" />}
+                      onClick={handleTestBuzzer}
+                      title="Test the security weapon buzzer sound"
+                    >
+                      Test Buzzer
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      leftIcon={<ShieldAlert className="h-4 w-4" />}
+                      onClick={handleDemoWeapon}
+                      title="Injects a clearly-labelled DEMO weapon detection to demonstrate the alert pipeline"
+                    >
+                      Trigger demo weapon
+                    </Button>
+                  </div>
                 </div>
               )}
             </CardBody>
